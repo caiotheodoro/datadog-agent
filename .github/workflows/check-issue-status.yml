@@ -44,16 +44,16 @@ jobs:
             } else if (context.payload.inputs && context.payload.inputs.issue_number) {
               // For workflow_dispatch, fetch the latest comment's author on the issue
 
-              const comments = await github.rest.issues.listComments({
+              const comments = await github.paginate(github.rest.issues.listComments, {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: issueNumber,
+                issue_number: issueNumber
               });
-              if (comments.data.length === 0) {
+              if (comments.length === 0) {
                 // no comments, cannot determine user
                 return "false";
               }
-              username = comments.data[comments.data.length - 1].user.login;
+              username = comments[comments.length - 1].user.login;
             } else {
               return "false";
             }
@@ -68,7 +68,8 @@ jobs:
               }
               return "false";
             } catch (error) {
-              if (error.message.startsWith('User does not exist or is not a member')) {
+              // 404 is the documented non-member response, the error message is not: https://docs.github.com/en/rest/orgs/members#check-organization-membership-for-a-user
+              if (error.status === 404) {
                 // User is not a datadog member
                 return "false";
               }
