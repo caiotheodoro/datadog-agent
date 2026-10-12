@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    The runtime usage of the host SBOM leaves out the open of a host file
+    that is gone from its path, or replaced there, by the time system-probe
+    handles it. rpm opens each executable it removes or replaces to clear
+    its file capabilities, on RHEL 8 and later, Amazon Linux 2023 and
+    Fedora, and a package that rpm upgraded or reinstalled read as run by
+    root at the time of the upgrade.

@@ -1248,7 +1248,7 @@ func (p *EBPFProbe) DispatchEvent(event *model.Event, notifyConsumers bool) {
 				}
 
 				// NOTE(safchain) pass the file path & the required metadata to the resolver instead of the file event
-				p.Resolvers.SBOMResolver.ResolvePackage(event.ProcessContext, &file)
+				p.Resolvers.SBOMResolver.ResolveOpen(event.ProcessContext, &file)
 			}
 		}
 	}
