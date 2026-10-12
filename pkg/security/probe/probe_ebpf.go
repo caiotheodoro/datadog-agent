@@ -1247,6 +1247,9 @@ func (p *EBPFProbe) DispatchEvent(event *model.Event, notifyConsumers bool) {
 					}
 				}
 
+				if strings.Contains(file.PathnameStr, "crictl") || strings.Contains(file.PathnameStr, "kubeadm") {
+					seclog.Infof("SBOMDEBUG open %q comm=%s pid=%d cid=%q ino=%d flags=%d resolved=%v err=%v evflags=%d", file.PathnameStr, event.ProcessContext.Comm, event.ProcessContext.Pid, event.ProcessContext.ContainerContext.ContainerID, file.Inode, file.Flags, file.IsPathnameStrResolved, file.PathResolutionError, event.Flags)
+				}
 				// NOTE(safchain) pass the file path & the required metadata to the resolver instead of the file event
 				p.Resolvers.SBOMResolver.ResolveOpen(event.ProcessContext, &file)
 			}

@@ -1066,10 +1066,19 @@ func (r *Resolver) ResolvePackage(pc *model.ProcessContext, file *model.FileEven
 // replaces, to clear its file capabilities, and then deletes the file or
 // renames the new one over it.
 func (r *Resolver) ResolveOpen(pc *model.ProcessContext, file *model.FileEvent) *sbomtypes.Package {
+	if strings.Contains(file.PathnameStr, "crictl") || strings.Contains(file.PathnameStr, "kubeadm") {
+		var st syscall.Stat_t
+		err := syscall.Lstat(r.hostRoot+file.PathnameStr, &st)
+		seclog.Infof("SBOMDEBUG ResolveOpen %q hostRoot=%q eventIno=%d statIno=%d statErr=%v replaced=%v", file.PathnameStr, r.hostRoot, file.Inode, st.Ino, err, r.replaced(file))
+	}
 	if pc.ContainerContext.ContainerID == "" && r.replaced(file) {
 		return nil
 	}
-	return r.ResolvePackage(pc, file)
+	pkg := r.ResolvePackage(pc, file)
+	if strings.Contains(file.PathnameStr, "crictl") || strings.Contains(file.PathnameStr, "kubeadm") {
+		seclog.Infof("SBOMDEBUG ResolvePackage %q pkg=%+v", file.PathnameStr, pkg)
+	}
+	return pkg
 }
 
 // queuePendingFileEvent stores a file access that arrived before the SBOM for the

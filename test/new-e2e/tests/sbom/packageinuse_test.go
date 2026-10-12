@@ -522,6 +522,23 @@ os.close(os.open(f, os.O_RDONLY | os.O_NOFOLLOW))
 os.rename(f + ".new", f)
 os.close(os.open("/usr/bin/crictl", os.O_RDONLY | os.O_NOFOLLOW))
 '`)
+		s.T().Logf("SBOMDEBUG host inodes after the replacement:\n%s", s.hostExec(s.T(), shell, "stat -c '%i %n' /usr/bin/kubeadm /usr/bin/kubeadm.orig /usr/bin/crictl; uname -r; findmnt -no FSTYPE /"))
+		s.T().Cleanup(func() {
+			since := metav1.NewTime(time.Unix(openedAt-5, 0))
+			logs, err := s.Env().KubernetesCluster.Client().CoreV1().Pods("datadog").GetLogs(s.nodeAgent(s.T()).Name, &corev1.PodLogOptions{
+				Container: "system-probe",
+				SinceTime: &since,
+			}).DoRaw(context.Background())
+			if err != nil {
+				s.T().Logf("SBOMDEBUG system-probe log: %v", err)
+				return
+			}
+			for _, line := range strings.Split(string(logs), "\n") {
+				if strings.Contains(line, "SBOMDEBUG") {
+					s.T().Logf("%s", line)
+				}
+			}
+		})
 
 		s.EventuallyWithTf(func(collect *assert.CollectT) {
 			c := &myCollectT{CollectT: collect, errors: []error{}}
