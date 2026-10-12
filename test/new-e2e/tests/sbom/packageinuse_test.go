@@ -501,6 +501,44 @@ func (s *packageInUseSuite) TestHostPackageInUse() {
 			assert.GreaterOrEqualf(c, ts, used, "gzip lost the usage recorded before the scan of the host packages")
 		}, 6*time.Minute, 20*time.Second, "the host SBOM never carried gzip after the scan of the host packages")
 	})
+
+	// rpm opens each executable it replaces, to clear its file capabilities,
+	// right before it renames the new file over it. A process that does the
+	// same to /usr/bin/kubeadm leaves kubeadm unused, and its open of
+	// /usr/bin/crictl, left in place, puts cri-tools in use. The kubeadm install
+	// brings both packages, and nothing runs them afterwards.
+	s.Run("replaced", func() {
+		const kubeadm = "/usr/bin/kubeadm"
+		const restore = "if [ -e " + kubeadm + ".orig ]; then mv -f " + kubeadm + ".orig " + kubeadm + "; fi; rm -f " + kubeadm + ".new"
+		s.hostExec(s.T(), shell, restore)
+		s.T().Cleanup(func() { s.hostExec(s.T(), shell, restore) })
+		openedAt := s.hostEpoch(shell)
+		s.hostExec(s.T(), shell, `python3 -c '
+import os
+f = "`+kubeadm+`"
+os.link(f, f + ".orig")
+open(f + ".new", "w").close()
+os.close(os.open(f, os.O_RDONLY | os.O_NOFOLLOW))
+os.rename(f + ".new", f)
+os.close(os.open("/usr/bin/crictl", os.O_RDONLY | os.O_NOFOLLOW))
+'`)
+
+		s.EventuallyWithTf(func(collect *assert.CollectT) {
+			c := &myCollectT{CollectT: collect, errors: []error{}}
+			collect = nil //nolint:ineffassign
+
+			comps := s.newestHostSBOM(c, time.Time{})
+			criTools := findComponent(comps, "cri-tools")
+			require.NotNilf(c, criTools, "no cri-tools in the host SBOM")
+			criToolsTS, _ := lastSeenRunning(criTools)
+			require.GreaterOrEqualf(c, criToolsTS, openedAt, "cri-tools not reported in use since the open of /usr/bin/crictl yet")
+			kubeadmComp := findComponent(comps, "kubeadm")
+			require.NotNilf(c, kubeadmComp, "no kubeadm in the host SBOM")
+			kubeadmTS, _ := lastSeenRunning(kubeadmComp)
+			s.T().Logf("PKG-IN-USE[host] replaced: kubeadm LastSeenRunning=%d, cri-tools LastSeenRunning=%d, opened at %d", kubeadmTS, criToolsTS, openedAt)
+			assert.Lessf(c, kubeadmTS, openedAt, "the open of %s before its replacement put kubeadm in use", kubeadm)
+		}, 10*time.Minute, 15*time.Second, "the host SBOM never reported cri-tools in use after the open of /usr/bin/crictl")
+	})
 }
 
 // startHostShell runs a privileged pod in the PID namespace of the node, on the

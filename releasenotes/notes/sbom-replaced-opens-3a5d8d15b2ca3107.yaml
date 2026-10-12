@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    The runtime usage of the host SBOM leaves out the open of a host file
+    that is gone from its path, or replaced there, by the time system-probe
+    handles it. rpm 4.18 and later, as on RHEL 10 and Fedora, open each
+    executable they remove or replace to clear its file capabilities, and a
+    package that rpm upgraded or reinstalled read as run by root at the time
+    of the upgrade.

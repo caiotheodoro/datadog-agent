@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"syscall"
@@ -712,6 +713,120 @@ func TestResolvePackageRecordsNoUsageOnDirectory(t *testing.T) {
 	if r.hostSBOM.forwarder != nil {
 		t.Errorf("the directory open triggered forwarding")
 	}
+}
+
+// TestResolveOpen checks that the open of a host file records usage while the
+// file stays at its path, and leaves the usage as it is once the file is gone
+// or replaced there, as rpm leaves each executable it opens to clear its file
+// capabilities. A run of a replaced file counts, as a process keeps running
+// the build an upgrade replaced.
+func TestResolveOpen(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		resolve      func(*Resolver, *model.ProcessContext, *model.FileEvent) *sbomtypes.Package
+		after        func(t *testing.T, path string)
+		flags        int32
+		unknownInode bool
+		records      bool
+	}{
+		{name: "open", resolve: (*Resolver).ResolveOpen, records: true},
+		{name: "open of a removed file", resolve: (*Resolver).ResolveOpen, after: removeFile},
+		{name: "open of a replaced file", resolve: (*Resolver).ResolveOpen, after: replaceFile},
+		{name: "open of a replaced overlayfs file", resolve: (*Resolver).ResolveOpen, after: replaceFile, flags: model.LowerLayer, records: true},
+		{name: "open of a removed file of unknown inode", resolve: (*Resolver).ResolveOpen, after: removeFile, unknownInode: true, records: true},
+		{name: "run of a replaced file", resolve: (*Resolver).ResolvePackage, after: replaceFile, records: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newHostSBOMResolver(t)
+			r.hostRoot = t.TempDir()
+
+			pc, file := hostAccess()
+			path := r.hostRoot + file.PathnameStr
+			if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, nil, 0755); err != nil {
+				t.Fatal(err)
+			}
+			if !tc.unknownInode {
+				file.Inode = inode(t, path)
+			}
+			file.Flags = tc.flags
+			if tc.after != nil {
+				tc.after(t, path)
+			}
+
+			pkg := tc.resolve(r, pc, file)
+			if got := pkg != nil; got != tc.records {
+				t.Errorf("package resolved = %v, want %v", got, tc.records)
+			}
+			if got := !r.hostSBOM.data.packages[0].LastAccess.IsZero(); got != tc.records {
+				t.Errorf("usage recorded = %v, want %v", got, tc.records)
+			}
+		})
+	}
+}
+
+// TestResolveOpenOfContainerFile checks that the open of a file of a container
+// records usage, whatever stands at the same path on the host.
+func TestResolveOpenOfContainerFile(t *testing.T) {
+	r := newHostSBOMResolver(t)
+	r.hostRoot = t.TempDir()
+
+	sbom := NewSBOM("container-id", nil, "image:tag")
+	sbom.setReport([]sbomtypes.PackageWithInstalledFiles{{
+		Package:        sbomtypes.Package{Name: "util-linux", Version: "2.40.4"},
+		InstalledFiles: []string{"/usr/bin/su"},
+	}})
+	sbom.state.Store(computedState)
+	t.Cleanup(sbom.stop)
+	sboms, err := simplelru.NewLRU[containerutils.ContainerID, *SBOM](1, nil)
+	if err != nil {
+		t.Fatalf("NewLRU: %v", err)
+	}
+	sboms.Add(sbom.ContainerID, sbom)
+	r.sboms = sboms
+
+	pc, file := hostAccess()
+	pc.ContainerContext.ContainerID = sbom.ContainerID
+	file.Inode = 1
+
+	if pkg := r.ResolveOpen(pc, file); pkg == nil || pkg.LastAccess.IsZero() {
+		t.Errorf("package = %+v, want util-linux with its usage recorded", pkg)
+	}
+}
+
+// removeFile deletes the file at path, as rpm deletes an executable it removes.
+func removeFile(t *testing.T, path string) {
+	t.Helper()
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// replaceFile renames a new file over the file at path, as rpm installs each
+// file of a package it upgrades or reinstalls.
+func replaceFile(t *testing.T, path string) {
+	t.Helper()
+
+	if err := os.WriteFile(path+".new", nil, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path+".new", path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// inode returns the inode of the file at path.
+func inode(t *testing.T, path string) uint64 {
+	t.Helper()
+
+	stat, err := utils.UnixStat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stat.Ino
 }
 
 // TestPendingFileEventsSkipDirectories checks that a directory open waiting on

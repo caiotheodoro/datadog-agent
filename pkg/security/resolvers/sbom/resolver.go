@@ -275,6 +275,7 @@ type Resolver struct {
 
 	statsdClient   statsd.ClientInterface
 	sbomCollector  sbomCollector
+	hostRoot       string
 	hostRootDevice uint64
 	hostRootInode  uint64
 	hostSBOM       *SBOM
@@ -331,6 +332,7 @@ func NewSBOMResolver(c *config.RuntimeSecurityConfig, statsdClient statsd.Client
 		dataCache:             dataCache,
 		scanChan:              make(chan *SBOM, 100),
 		sbomCollector:         sbomCollector,
+		hostRoot:              hostProcRootPath,
 		hostRootDevice:        stat.Dev,
 		hostRootInode:         stat.Ino,
 		sbomGenerations:       atomic.NewUint64(0),
@@ -775,6 +777,21 @@ func (r *Resolver) onHostRoot(pid uint32) bool {
 	return stat.Dev == r.hostRootDevice && stat.Ino == r.hostRootInode
 }
 
+// replaced reports whether the host file of an event is gone from its path, or
+// replaced there by another file. A file of unknown path or inode counts as in
+// place, and so does an overlayfs file, whose event carries the inode of the
+// layer it comes from, which can differ from the inode stat reports.
+func (r *Resolver) replaced(file *model.FileEvent) bool {
+	if !file.IsPathnameStrResolved || file.Inode == 0 || file.IsInLowerLayer() || file.IsInUpperLayer() {
+		return false
+	}
+	var stat syscall.Stat_t
+	if err := syscall.Lstat(r.hostRoot+file.PathnameStr, &stat); err != nil {
+		return errors.Is(err, fs.ErrNotExist)
+	}
+	return stat.Ino != file.Inode
+}
+
 // isDir reports whether mode, the mode of the file of an event, is that of a
 // directory.
 func isDir(mode uint16) bool {
@@ -1040,6 +1057,19 @@ func (r *Resolver) ResolvePackage(pc *model.ProcessContext, file *model.FileEven
 	}
 
 	return pkg
+}
+
+// ResolveOpen returns the package that owns file, which the process of pc
+// opens, and records the open as usage of the package, as ResolvePackage
+// does. It returns nil for a host file gone from its path, or replaced there,
+// by the time the open is resolved. rpm opens each executable it removes or
+// replaces, to clear its file capabilities, and then deletes the file or
+// renames the new one over it.
+func (r *Resolver) ResolveOpen(pc *model.ProcessContext, file *model.FileEvent) *sbomtypes.Package {
+	if pc.ContainerContext.ContainerID == "" && r.replaced(file) {
+		return nil
+	}
+	return r.ResolvePackage(pc, file)
 }
 
 // queuePendingFileEvent stores a file access that arrived before the SBOM for the
